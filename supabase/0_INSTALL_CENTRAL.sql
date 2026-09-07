@@ -23,8 +23,6 @@ grant usage on schema public to anon, authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated;
 alter default privileges in schema public grant all on sequences to anon, authenticated;
 
-revoke all on table public.profiles, public.apps, public.clients, public.sales, public.settings from anon;
-
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -211,6 +209,11 @@ create policy "settings_update_own"
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+-- Defense in depth: strip ALL privileges on the panel tables from the
+-- anonymous role. (Va APÓS de crear las tablas: en una base nueva no
+-- existen aún, y revoke sobre una tabla inexistente aborta el script.)
+revoke all on table public.profiles, public.apps, public.clients, public.sales, public.settings from anon;
+
 -- -------------------------------------------------------------
 -- 2. AUTH HARDENING (public.auth.sql)
 -- -------------------------------------------------------------
@@ -370,13 +373,17 @@ grant execute on function public.recovery_key_matches(text, text) to authenticat
 -- -------------------------------------------------------------
 -- 4. SEED (catálogo de apps de ejemplo)
 -- -------------------------------------------------------------
-insert into public.apps (name, type, version) values
+insert into public.apps (name, type, version)
+select v.name, v.type, v.version from (values
   ('OX1 WhatShop',       'Web app',      'v1.0'),
   ('Retail Store App',   'Web app',      'v3.2'),
   ('Inventory Manager',  'SaaS',         'v5.0'),
   ('Point of Sale',      'Desktop app',  'v2.4'),
   ('Booking Widget',     'Web widget',   'v1.8')
-on conflict do nothing;
+) as v(name, type, version)
+where not exists (
+  select 1 from public.apps a where a.name = v.name
+);
 
 -- -------------------------------------------------------------
 -- 5. LICENSES (OX1 Segurity 01 + offline tokens)

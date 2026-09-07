@@ -9,11 +9,6 @@ grant usage on schema public to anon, authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated;
 alter default privileges in schema public grant all on sequences to anon, authenticated;
 
--- Defense in depth: strip ALL privileges on the panel tables from the
--- anonymous role. RLS already blocks anon reads/writes; this removes the
--- underlying grants so even an RLS mistake can't leak panel data.
-revoke all on table public.profiles, public.apps, public.clients, public.sales, public.settings from anon;
-
 -- -------------------------------------------------------------
 -- Helper: is the current user an admin? (checks profiles.role)
 -- -------------------------------------------------------------
@@ -222,3 +217,10 @@ create policy "settings_update_own"
   on public.settings for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Defense in depth: strip ALL privileges on the panel tables from the
+-- anonymous role. RLS already blocks anon reads/writes; this removes the
+-- underlying grants so even an RLS mistake can't leak panel data.
+-- (Va DESPUÉS de crear las tablas: revoke sobre una tabla inexistente
+-- aborta el script en una base nueva.)
+revoke all on table public.profiles, public.apps, public.clients, public.sales, public.settings from anon;
