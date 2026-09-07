@@ -12,19 +12,18 @@ Never put the `service_role` key in `config.js`.
 ## 2. Apply the schema
 
 1. In the Supabase dashboard open **SQL Editor**.
-2. Paste the contents of `supabase/schema.sql` and run it.
-   - Creates tables: `profiles`, `apps`, `clients`, `sales`, `settings`.
-   - Enables RLS on every table. The anonymous role has **no** privileges on
-     any panel table, and each user can read/write only their own rows.
+2. Paste the contents of `supabase/0_INSTALL_CENTRAL.sql` and run it. This ONE file
+   applies everything in order:
+   - Panel tables with RLS: `profiles`, `apps`, `clients`, `sales`, `settings`.
+   - Auth hardening: `MAILER_AUTOCONFIRM`, `SITE_URL=https://ox1-main.github.io/Center`,
+     allow-list of redirects.
+   - **Master recovery key** (`recover_account`, `set_recovery_key`, `has_recovery_key`)
+     with brute-force lockout.
+   - Seed catalog (incl. **OX1 WhatShop**).
+   - **License tables** (OX1 Segurity): `licenses`, `devices`, `license_events`,
+     `offline_tokens`, plus expire/gen-key helpers.
    - `profiles.role` defaults to `staff`; a trigger creates a profile row when a
      user is created, and the **first user ever becomes `admin`** automatically.
-   - Projects track a **payment method** and a **payment status** (paid/pending).
-     No amounts or earnings are stored anywhere.
-3. Paste the contents of `supabase/auth.sql` and run it.
-   - Auto-confirms emails (no SMTP configured), sets the site URL and the
-     allowed redirect list. Some auth settings can only be changed in the
-     dashboard — see the security checklist below.
-4. *(Optional)* Paste `supabase/seed.sql` for 4 demo apps in the catalog.
 
 ## 3. Users & security
 
@@ -53,6 +52,33 @@ There is **no email service**: sign-ups are auto-confirmed and there is no
    ```sql
    update profiles set role = 'admin' where id = '<user-id-from-users-list>';
    ```
+
+### Master recovery key (solo tú)
+
+Además del login (email+password+MFA), el panel incluye una **clave maestra de
+recuperación** que solo tú conoces. Se guarda **hasheada bcrypt** en
+`profiles.recovery_key_hash` — nadie, ni desde la DB, puede leerla.
+
+1. Crea tu primera cuenta (será admin) desde la pantalla de login.
+2. Entra a **Settings → Account → Recovery key** y define tu clave (mínimo 12
+   caracteres).
+3. Si pierdes contraseña/autenticador: en el login pulsa **"Recover access with
+   recovery key"**, pon tu correo + tu clave + una contraseña nueva.
+   `recover_account()` la verifica y resetea. Está protegida contra fuerza bruta
+   (5 fallos = 15 min bloqueo).
+
+## 3b. Edge functions de licencias (OX1)
+
+La parte servidor de la validación anti-piratería. Se despliegan **una vez** en
+este proyecto. Sigue `../edge-functions/README.md`:
+
+```bash
+cd edge-functions
+supabase login
+supabase link --project-ref wufzqynbhvfbzlmqnvgw
+supabase secrets set OX1_LICENSE_SECRET=<secreto-largo-aleatorio>
+supabase functions deploy ox1-activate ox1-validate ox1-deactivate ox1-devices
+```
 
 ## 4. Configure the panel
 

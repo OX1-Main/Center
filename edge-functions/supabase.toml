@@ -1,0 +1,22 @@
+# =============================================================
+# Supabase config — Edge Functions de licencias (OX1)
+# Para desplegar en tu Supabase CENTRAL:
+#   cd edge-functions
+#   supabase login
+#   supabase link --project-ref wufzqynbhvfbzlmqnvgw
+#   supabase secrets set OX1_LICENSE_SECRET=<tu-secreto-aleatorio-largo>
+#   supabase functions deploy ox1-activate ox1-validate ox1-deactivate ox1-devices
+# =============================================================
+project_id = "wufzqynbhvfbzlmqnvgw"
+
+[functions.ox1-activate]
+verify_jwt = false
+
+[functions.ox1-validate]
+verify_jwt = false
+
+[functions.ox1-deactivate]
+verify_jwt = false
+
+[functions.ox1-devices]
+verify_jwt = false

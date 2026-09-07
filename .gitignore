@@ -17,6 +17,7 @@ dist-ssr
 # (RLS protects your data). NEVER put the service_role / secret key
 # in config.js or anywhere in this repo.
 supabase/.env
+edge-functions/.env
 
 # Editor directories and files
 .vscode/*
