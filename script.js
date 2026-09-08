@@ -109,6 +109,7 @@ let currentForm = null;
 let loginMode = 'signin';
 let loginFactorId = null;
 let authGuard = null;
+let sessionHandling = null;
 
 // ---------- i18n ----------
 const t = (s, vars) => {
@@ -1291,12 +1292,15 @@ const hideErr = el => { if (!el) return; el.textContent = ''; el.hidden = true; 
 function showLogin() {
   hideMfaStep();
   setLoginMode('signin');
+  hideBoot();
   $('#loginView').hidden = false;
-  document.querySelector('.preview').style.display = 'none';
+  const p = document.querySelector('.preview');
+  if (p) p.style.display = 'none';
 }
 function showApp() {
   $('#loginView').hidden = true;
-  document.querySelector('.preview').style.display = 'block';
+  const p = document.querySelector('.preview');
+  if (p) { p.hidden = false; p.style.display = 'block'; }
 }
 function showBoot(msg) {
   const o = $('#bootOverlay');
@@ -1525,15 +1529,22 @@ async function refreshRecoveryCard() {
 
 // Route a fresh (possibly AAL1) session: if the user has MFA enabled we
 // ask for the authenticator code before entering the app.
+// Deduplicated: signing in fires both the direct call from onLoginSubmit
+// and the SIGNED_IN auth listener, so only one flow may run at a time.
 async function handleNewSession() {
-  if (!DB.isConfigured) { await afterAuth(); return; }
-  const st = await DB.mfaStatus();
-  if (!st.error && st.data && st.data.enabled && st.data.factorId && st.data.level !== 'aal2') {
-    loginFactorId = st.data.factorId;
-    showMfaStep();
-    return;
-  }
-  await afterAuth();
+  if (sessionHandling) return sessionHandling;
+  const run = (async () => {
+    if (!DB.isConfigured) { await afterAuth(); return; }
+    const st = await DB.mfaStatus();
+    if (!st.error && st.data && st.data.enabled && st.data.factorId && st.data.level !== 'aal2') {
+      loginFactorId = st.data.factorId;
+      showMfaStep();
+      return;
+    }
+    await afterAuth();
+  })().finally(() => { sessionHandling = null; });
+  sessionHandling = run;
+  return run;
 }
 function startAuth() {
   if (authGuard) return authGuard;
@@ -1568,7 +1579,7 @@ async function onLoginSubmit(e) {
     if (data && data.session && data.session.user) {
       user = data.session.user;
       toast(t('Account created — welcome!'), 'success');
-      await startAuth();
+      await handleNewSession();
     } else if (data && data.session === null) {
       if (!DB.isConfigured) { toast(t('Demo mode — accounts are not stored. Use Sign in to enter.'), 'warn'); return; }
       const si = await DB.signIn(email, pass);
@@ -1762,6 +1773,7 @@ async function afterAuth() {
 }
 
 async function boot() {
+  showBoot(t('Connecting…'));
   if (!DB.isConfigured) console.info('Demo mode — using in-memory demo data (fill config.js for Supabase).');
   const { data: { session } } = await DB.getSession();
   if (session && session.user) { user = session.user; await afterAuth(); }
