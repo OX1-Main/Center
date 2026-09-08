@@ -10,7 +10,22 @@ alter default privileges in schema public grant all on tables to anon, authentic
 alter default privileges in schema public grant all on sequences to anon, authenticated;
 
 -- -------------------------------------------------------------
+-- profiles (one row per auth user; role admin/staff)
+-- -------------------------------------------------------------
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  role text not null default 'staff' check (role in ('admin', 'staff')),
+  display_name text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+
+-- -------------------------------------------------------------
 -- Helper: is the current user an admin? (checks profiles.role)
+-- Creada DESPUÉS de la tabla: PostgreSQL valida las referencias de
+-- las funciones SQL (language sql) al crearlas (42P01 si la tabla
+-- aún no existe).
 -- -------------------------------------------------------------
 create or replace function public.is_admin()
 returns boolean
@@ -24,18 +39,6 @@ as $$
     where p.id = auth.uid() and p.role = 'admin'
   );
 $$;
-
--- -------------------------------------------------------------
--- profiles (one row per auth user; role admin/staff)
--- -------------------------------------------------------------
-create table if not exists public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
-  role text not null default 'staff' check (role in ('admin', 'staff')),
-  display_name text,
-  created_at timestamptz not null default now()
-);
-
-alter table public.profiles enable row level security;
 
 -- Own profile only: previously ANY authenticated user could SELECT every
 -- profile row (leaked names/roles of all users). Now each user sees only

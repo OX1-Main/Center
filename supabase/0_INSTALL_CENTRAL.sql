@@ -23,6 +23,20 @@ grant usage on schema public to anon, authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated;
 alter default privileges in schema public grant all on sequences to anon, authenticated;
 
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  role text not null default 'staff' check (role in ('admin', 'staff')),
+  display_name text,
+  recovery_key_hash text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+
+-- Helper: is the current user an admin? (checks profiles.role).
+-- Creada DESPUÉS de la tabla: PostgreSQL valida las referencias de las
+-- funciones SQL (language sql) al crearlas. Si apuntaran a una tabla que
+-- aún no existe, el script aborta con 42P01.
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -35,16 +49,6 @@ as $$
     where p.id = auth.uid() and p.role = 'admin'
   );
 $$;
-
-create table if not exists public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
-  role text not null default 'staff' check (role in ('admin', 'staff')),
-  display_name text,
-  recovery_key_hash text,
-  created_at timestamptz not null default now()
-);
-
-alter table public.profiles enable row level security;
 
 drop policy if exists "profiles_select_own" on public.profiles;
 create policy "profiles_select_own"
@@ -215,16 +219,23 @@ create policy "settings_update_own"
 revoke all on table public.profiles, public.apps, public.clients, public.sales, public.settings from anon;
 
 -- -------------------------------------------------------------
--- 2. AUTH HARDENING (public.auth.sql)
+-- 2. AUTH SETTINGS (mailer auto-confirm + site URL + allow-list)
+--    auth.config SOLO existe en versiones antiguas de GoTrue.
+--    En proyectos nuevos (2025+ / claves sb_publishable_) esa tabla
+--    no existe: los ajustes se ponen por dashboard
+--    (Authentication > URL Configuration). El guard lo hace
+--    resistente a ambos.
 -- -------------------------------------------------------------
-update auth.config
-set MAILER_AUTOCONFIRM = 'true';
-
-update auth.config
-set SITE_URL = 'https://ox1-main.github.io/Center';
-
-update auth.config
-set URI_ALLOW_LIST = '["https://ox1-main.github.io/Center","http://localhost:8137","http://localhost:3000"]';
+do $$
+begin
+  if to_regclass('auth.config') is not null then
+    update auth.config set MAILER_AUTOCONFIRM = 'true';
+    update auth.config set SITE_URL = 'https://ox1-main.github.io/Center';
+    update auth.config set URI_ALLOW_LIST =
+      '["https://ox1-main.github.io/Center","http://localhost:8137","http://localhost:3000"]';
+  end if;
+end;
+$$;
 
 -- -------------------------------------------------------------
 -- 3. MASTER RECOVERY KEY (public.recovery.sql)
