@@ -63,7 +63,7 @@
   const mapApp = r => ({ id: r.id, name: r.name, type: r.type, version: r.version });
   const mapClient = r => ({ id: r.id, name: r.name, company: r.company, email: r.email, phone: r.phone, joined: r.joined });
   const mapSale = r => ({ id: r.id, appId: r.app_id, clientId: r.client_id, contract: r.contract, plan: r.plan, subscriptionTier: r.subscription_tier || 'free', startDate: r.start_date, endDate: r.end_date, status: r.status, page: r.page, db: r.db, apiKey: r.api_key, paymentMethod: r.payment_method || '—', paymentStatus: r.payment_status || 'pending', paidUntil: r.paid_until, nextDue: r.next_due, graceEnd: r.grace_end, trialEnd: r.trial_end, blockedSince: r.blocked_since, lastRemindedAt: r.last_reminded_at });
-  const mapStore = r => ({ id: r.id, name: r.name, appId: r.app_id, platform: r.platform || 'web', ghPage: r.gh_page, wsRef: r.ws_ref, wsUrl: r.ws_url, wsStoreId: r.ws_store_id, saleId: r.sale_id, status: r.status, blockedReason: r.blocked_reason });
+  const mapStore = r => ({ id: r.id, name: r.name, appId: r.app_id, platform: r.platform || 'web', ghPage: r.gh_page, wsRef: r.ws_ref, wsUrl: r.ws_url, wsStoreId: r.ws_store_id, saleId: r.sale_id, status: r.status, blockedReason: r.blocked_reason, adminUser: r.admin_user || '', hasAdminPass: !!(r.admin_pass_hash) });
   const mapPayment = r => ({ id: r.id, saleId: r.sale_id, months: r.months, method: r.method, note: r.note, paidAt: r.paid_at });
   const mapSettings = r => ({ alertDays: r.alert_days, panelName: r.panel_name, emailNotif: r.email_notif, webhookNotif: r.webhook_notif, lang: r.lang || 'en', paymentMethods: Array.isArray(r.payment_methods) && r.payment_methods.length ? r.payment_methods : DEFAULT_PAYMENT_METHODS.slice() });
 
@@ -345,7 +345,9 @@
       ws_store_id: st.wsStoreId != null ? st.wsStoreId : null,
       sale_id: st.saleId || null,
       status: st.status || 'active',
-      blocked_reason: st.blockedReason || null
+      blocked_reason: st.blockedReason || null,
+      admin_user: st.adminUser || null,
+      ...(st.adminPassHash ? { admin_pass_hash: st.adminPassHash } : {})
     };
     if (!real) {
       if (st.id) {

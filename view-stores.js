@@ -111,7 +111,13 @@
     'Adds the deployment data (repo, database and subscription) to the existing project.': 'Añade los datos del despliegue (repo, base de datos y suscripción) a la suscripción ya existente.',
     'Link page to this project': 'Vincular página/comercio a esta suscripción',
     'No apps yet — create one first': 'Aún no hay aplicaciones — crea una primero',
-    'This project has an attached store.': 'Esta suscripción ya tiene una tienda vinculada.'
+    'This project has an attached store.': 'Esta suscripción ya tiene una tienda vinculada.',
+    'Admin login': 'Acceso del admin',
+    'Admin user': 'Usuario del admin',
+    'Admin password': 'Contraseña del admin',
+    'Admin password of the store panel': 'Contraseña del panel de la tienda. Se guarda cifrada.',
+    'Store admin login saved as SHA-256. The store admin signs in with user + password; if the store is unregistered or unpaid, login is denied.': 'El acceso del admin se guarda cifrado (SHA-256). El admin de la tienda entra con usuario + contraseña; si la tienda no está registrada o no ha pagado, no podrá entrar.',
+    'Leave blank to keep the current password.': 'Déjala vacía para conservar la contraseña actual.'
   });
 
   // -------------------------------------------------------------
@@ -180,6 +186,10 @@
   // 5. Helpers
   // -------------------------------------------------------------
   const toIS = iso => (iso ? String(iso).slice(0, 10) : null);
+  async function sha256Hex(s) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s)));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
   const stFilter = { client: 'all' };
   const saleFor = st => (DB.data.sales || []).find(s => s.id === st.saleId);
   const clientFor = st => { const s = saleFor(st); return s ? (DB.data.clients || []).find(c => c.id === s.clientId) : null; };
@@ -501,6 +511,15 @@
           </select></label>
           <div class="field ox1s-no-pad"><p class="ox1s-hint">${t('Payment date')}: el período pago empieza hoy (o la fecha que pongas). Prórroga de 7 días tras el vencimiento.</p></div>
         </div>
+      </div>
+
+      <div class="ox1s-sec">
+        <div class="ox1s-sec-h">4 · ${t('Admin login')}</div>
+        <div class="form-row">
+          <label class="field"><span>${t('Admin user')}</span><input id="stm-admin-user" type="text" autocomplete="off" placeholder="admin" value="${esc((st && st.adminUser) || '')}" /></label>
+          <label class="field"><span>${t('Admin password')}</span><input id="stm-admin-pass" type="password" autocomplete="new-password" placeholder="${st && st.hasAdminPass ? t('Leave blank to keep the current password.') : '••••••••'}" /></label>
+        </div>
+        <p class="ox1s-hint">${t('Store admin login saved as SHA-256. The store admin signs in with user + password; if the store is unregistered or unpaid, login is denied.')}</p>
       </div>`,
       `<button class="btn btn-ghost" data-st="close-modal" type="button">${t('Cancel')}</button>
        <button class="btn btn-primary" id="stm-submit" type="button">${t('Save')}</button>`
@@ -592,8 +611,11 @@
       wsStoreId: wsIdNum,
       saleId,
       status,
-      blockedReason: st && st.blockedReason
+      blockedReason: st && st.blockedReason,
+      adminUser: (document.getElementById('stm-admin-user').value || '').trim() || null
     };
+    const adminPass = document.getElementById('stm-admin-pass').value;
+    if (adminPass) storePayload.adminPassHash = await sha256Hex(adminPass);
     const r2 = await DB.saveStore(storePayload);
     if (r2 && r2.error) { toast(r2.error.message || r2.error, 'error'); return; }
 
