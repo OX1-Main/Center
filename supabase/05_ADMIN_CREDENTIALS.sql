@@ -83,7 +83,7 @@ begin
   return json_build_object(
     'ok', true, 'online', v_online, 'status', v_status,
     'reason', v_reason, 'name', st.name,
-    'tier', st.app_id::text);
+    'tier', coalesce(s.subscription_tier, 'free'));
 end;
 $$;
 
