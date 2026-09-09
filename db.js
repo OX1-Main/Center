@@ -16,25 +16,40 @@
   const real = window.supabase && SUPABASE_URL.startsWith('https://') && !/YOURPROJECT|YOUR_SUPABASE/.test(SUPABASE_URL) && SUPABASE_ANON_KEY.length > 20;
 
   const supabase = real ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      flowType: 'pkce',
+      storageKey: 'sb-ox1-dashboard-token'
+    }
   }) : null;
+
+  // Único client compartido: el resto de módulos (p.ej. db-licenses.js)
+  // reutiliza ESTE para no crear un segundo client con el mismo storage
+  // de sesión (evita races de refresh/invalidación de token).
+  window.__OX1_SUPABASE = supabase;
 
   const DEFAULT_PAYMENT_METHODS = ['PayPal', 'Bank transfer', 'Cash', 'Credit card'];
 
   // Demo in-memory store: persists across loadAll() so edits survive
   // the reload cycle. Starts empty (no test data).
-  const M = { apps: [], clients: [], sales: [] };
-  const resetStore = () => { M.apps = []; M.clients = []; M.sales = []; };
+  const M = { apps: [], clients: [], sales: [], stores: [], payments: [] };
+  const resetStore = () => { M.apps = []; M.clients = []; M.sales = []; M.stores = []; M.payments = []; };
   const snap = () => {
     DATA.apps = M.apps.map(x => ({ ...x }));
     DATA.clients = M.clients.map(x => ({ ...x }));
     DATA.sales = M.sales.map(x => ({ ...x }));
+    DATA.stores = M.stores.map(x => ({ ...x }));
+    DATA.payments = M.payments.map(x => ({ ...x }));
   };
 
   const DATA = {
     apps: [],
     clients: [],
     sales: [],
+    stores: [],
+    payments: [],
     settings: { alertDays: 7, panelName: 'My Services', emailNotif: true, webhookNotif: true, paymentMethods: DEFAULT_PAYMENT_METHODS.slice(), lang: 'en' },
     profile: { id: 'demo-user', role: 'admin', display_name: 'Demo Admin', email: 'demo@myservices.app' }
   };
@@ -47,7 +62,9 @@
   // ---------- mapping (real rows -> app shape) ----------
   const mapApp = r => ({ id: r.id, name: r.name, type: r.type, version: r.version });
   const mapClient = r => ({ id: r.id, name: r.name, company: r.company, email: r.email, phone: r.phone, joined: r.joined });
-  const mapSale = r => ({ id: r.id, appId: r.app_id, clientId: r.client_id, contract: r.contract, plan: r.plan, startDate: r.start_date, endDate: r.end_date, status: r.status, page: r.page, db: r.db, apiKey: r.api_key, paymentMethod: r.payment_method || '—', paymentStatus: r.payment_status || 'pending' });
+  const mapSale = r => ({ id: r.id, appId: r.app_id, clientId: r.client_id, contract: r.contract, plan: r.plan, subscriptionTier: r.subscription_tier || 'free', startDate: r.start_date, endDate: r.end_date, status: r.status, page: r.page, db: r.db, apiKey: r.api_key, paymentMethod: r.payment_method || '—', paymentStatus: r.payment_status || 'pending', paidUntil: r.paid_until, nextDue: r.next_due, graceEnd: r.grace_end, trialEnd: r.trial_end, blockedSince: r.blocked_since, lastRemindedAt: r.last_reminded_at });
+  const mapStore = r => ({ id: r.id, name: r.name, appId: r.app_id, platform: r.platform || 'web', ghPage: r.gh_page, wsRef: r.ws_ref, wsUrl: r.ws_url, wsStoreId: r.ws_store_id, saleId: r.sale_id, status: r.status, blockedReason: r.blocked_reason });
+  const mapPayment = r => ({ id: r.id, saleId: r.sale_id, months: r.months, method: r.method, note: r.note, paidAt: r.paid_at });
   const mapSettings = r => ({ alertDays: r.alert_days, panelName: r.panel_name, emailNotif: r.email_notif, webhookNotif: r.webhook_notif, lang: r.lang || 'en', paymentMethods: Array.isArray(r.payment_methods) && r.payment_methods.length ? r.payment_methods : DEFAULT_PAYMENT_METHODS.slice() });
 
   // ---------- auth ----------
@@ -63,9 +80,11 @@
     if (!real) return { error: null };
     return supabase.auth.signInWithPassword({ email, password });
   }
-  async function signOut() {
+  async function signOut(scope) {
     if (!real) return { error: null };
-    return supabase.auth.signOut();
+    // scope 'global' revoca TODAS las sesiones del usuario (todos los
+    // dispositivos). 'local' (default) solo cierra este navegador.
+    return supabase.auth.signOut({ scope: scope === 'global' ? 'global' : 'local' });
   }
   async function sendReset(email) {
     if (!real) return { error: null };
@@ -161,19 +180,23 @@
     const { data: { user }, error: ue } = await supabase.auth.getUser();
     if (ue || !user) return { error: ue ? ue.message : 'Not authenticated' };
     const uid = user.id;
-    const [apps, clients, sales, settings, profiles] = await Promise.all([
+    const [apps, clients, sales, settings, profiles, stores, payments] = await Promise.all([
       supabase.from('apps').select('*').order('created_at'),
       supabase.from('clients').select('*').eq('user_id', uid).order('created_at'),
       supabase.from('sales').select('*').eq('user_id', uid).order('created_at'),
       supabase.from('settings').select('*').eq('user_id', uid).maybeSingle(),
-      supabase.from('profiles').select('*').eq('id', uid).maybeSingle()
+      supabase.from('profiles').select('*').eq('id', uid).maybeSingle(),
+      supabase.from('stores').select('*').eq('user_id', uid).order('created_at'),
+      supabase.from('payments').select('*').eq('user_id', uid).order('paid_at', { ascending: false })
     ]);
-    for (const r of [apps, clients, sales]) if (r.error) return { error: r.error.message };
+    for (const r of [apps, clients, sales, stores, payments]) if (r.error) return { error: r.error.message };
     if (settings.error && settings.error.code !== 'PGRST116') return { error: settings.error.message };
     if (profiles.error && profiles.error.code !== 'PGRST116') return { error: profiles.error.message };
     DATA.apps = (apps.data || []).map(mapApp);
     DATA.clients = (clients.data || []).map(mapClient);
     DATA.sales = (sales.data || []).map(mapSale);
+    DATA.stores = (stores.data || []).map(mapStore);
+    DATA.payments = (payments.data || []).map(mapPayment);
     DATA.settings = settings.data ? mapSettings(settings.data) : { alertDays: 7, panelName: 'My Services', emailNotif: true, webhookNotif: true, paymentMethods: DEFAULT_PAYMENT_METHODS.slice(), lang: 'en' };
     DATA.profile = profiles.data
       ? { id: profiles.data.id, role: profiles.data.role, display_name: profiles.data.display_name, email: user.email }
@@ -215,12 +238,16 @@
   async function createSale(s) {
     const row = {
       app_id: s.appId, client_id: s.clientId, contract: s.contract, plan: s.plan,
+      subscription_tier: s.subscriptionTier || 'free',
       start_date: s.startDate || null, end_date: s.endDate || null,
+      next_due: s.nextDue || null, grace_end: s.graceEnd || null,
+      paid_until: s.paidUntil || null, trial_end: s.trialEnd || null,
+      blocked_since: s.blockedSince || null, last_reminded_at: s.lastRemindedAt || null,
       status: s.status || 'active', page: s.page || 'online', db: s.db || 'active', api_key: s.apiKey || genId(),
       payment_method: s.paymentMethod || '—', payment_status: s.paymentStatus || 'pending'
     };
     if (!real) {
-      const r = { id: genId(), appId: s.appId, clientId: s.clientId, contract: s.contract, plan: s.plan, startDate: s.startDate || null, endDate: s.endDate || null, status: row.status, page: row.page, db: row.db, apiKey: row.api_key, paymentMethod: row.payment_method, paymentStatus: row.payment_status };
+      const r = { id: genId(), appId: s.appId, clientId: s.clientId, contract: s.contract, plan: s.plan, subscriptionTier: row.subscription_tier, startDate: s.startDate || null, endDate: s.endDate || null, status: row.status, page: row.page, db: row.db, apiKey: row.api_key, paymentMethod: row.payment_method, paymentStatus: row.payment_status, paidUntil: row.paid_until, nextDue: row.next_due, graceEnd: row.grace_end, trialEnd: row.trial_end, blockedSince: row.blocked_since, lastRemindedAt: row.last_reminded_at };
       M.sales.push({ ...r }); snap(); await delay(); return { data: r, error: null };
     }
     return supabase.from('sales').insert(row).select().single();
@@ -228,11 +255,15 @@
   async function updateSale(id, s) {
     const row = {
       app_id: s.appId, client_id: s.clientId, contract: s.contract, plan: s.plan,
+      subscription_tier: s.subscriptionTier || 'free',
       start_date: s.startDate || null, end_date: s.endDate || null,
+      next_due: s.nextDue || null, grace_end: s.graceEnd || null,
+      paid_until: s.paidUntil || null, trial_end: s.trialEnd || null,
+      blocked_since: s.blockedSince || null, last_reminded_at: s.lastRemindedAt || null,
       status: s.status || 'active', page: s.page || 'online', db: s.db || 'active',
       payment_method: s.paymentMethod || '—', payment_status: s.paymentStatus || 'pending'
     };
-    if (!real) { const i = M.sales.findIndex(x => x.id === id); if (i > -1) M.sales[i] = { ...M.sales[i], appId: row.app_id, clientId: row.client_id, startDate: row.start_date, endDate: row.end_date, page: row.page, db: row.db, status: row.status, paymentMethod: row.payment_method, paymentStatus: row.payment_status }; snap(); await delay(); return { data: M.sales.find(x => x.id === id), error: null }; }
+    if (!real) { const i = M.sales.findIndex(x => x.id === id); if (i > -1) M.sales[i] = { ...M.sales[i], appId: row.app_id, clientId: row.client_id, startDate: row.start_date, endDate: row.end_date, page: row.page, db: row.db, status: row.status, paymentMethod: row.payment_method, paymentStatus: row.payment_status, paidUntil: row.paid_until, nextDue: row.next_due, graceEnd: row.grace_end, trialEnd: row.trial_end, blockedSince: row.blocked_since, lastRemindedAt: row.last_reminded_at }; snap(); await delay(); return { data: M.sales.find(x => x.id === id), error: null }; }
     return supabase.from('sales').update(row).eq('id', id).select().single();
   }
   async function deleteSale(id) {
@@ -247,32 +278,127 @@
     return supabase.from('sales').update(row).eq('id', sid);
   }
 
-  // Marks a project as paid: sets payment_status to paid, records the
-  // payment METHOD used and advances the next due date. No money stored.
+  // Registra un pago de N meses por adelantado. Avanza la suscripción
+  // sobre el período ya pagado (base = paid_until si aún es futuro, si no
+  // ahora). grace_end = next_due + 7 días. No se guarda dinero.
+  async function addPayment(saleId, opt = {}) {
+    const s = DATA.sales.find(x => x.id === saleId);
+    if (!s) return { error: { message: 'Venta no encontrada' } };
+    const months = Math.max(1, Math.round(opt.months) || 1);
+    const method = opt.method || s.paymentMethod || '—';
+    const note = opt.note || null;
+    const isOne = s.plan === 'onetime';
+
+    let paidUntilIso = null, graceEnd = null, endDate = null;
+    if (!isOne) {
+      const base = (s.paidUntil && new Date(s.paidUntil) > new Date()) ? new Date(s.paidUntil) : new Date();
+      const pUntil = new Date(base);
+      pUntil.setMonth(pUntil.getMonth() + months);
+      paidUntilIso = pUntil.toISOString();
+      graceEnd = new Date(pUntil.getTime() + 7 * 86400000).toISOString();
+      endDate = paidUntilIso.slice(0, 10);
+    }
+
+    if (!real) {
+      M.payments.push({ id: genId(), saleId, months, method, note, paidAt: new Date().toISOString() });
+      const i = M.sales.findIndex(x => x.id === saleId);
+      if (i > -1) Object.assign(M.sales[i], {
+        paymentStatus: 'paid', paymentMethod: method,
+        paidUntil: paidUntilIso, nextDue: paidUntilIso, graceEnd, endDate, lastRemindedAt: null
+      });
+      snap(); await delay(); return { error: null };
+    }
+    const ins = await supabase.from('payments').insert({ sale_id: saleId, months, method, note }).select().single();
+    if (ins.error) return { error: ins.error };
+    const upd = await supabase.from('sales').update(isOne
+      ? { payment_status: 'paid', payment_method: method }
+      : { payment_status: 'paid', payment_method: method, paid_until: paidUntilIso, next_due: paidUntilIso, grace_end: graceEnd, end_date: endDate, last_reminded_at: null })
+      .eq('id', saleId);
+    if (upd.error) return { error: upd.error };
+    return { error: null };
+  }
+
+  // Marcado rápido "Paid" (botones de lista): = un pago de 1 período.
   async function markPaid(sid, method) {
     const s = DATA.sales.find(x => x.id === sid);
-    const plan = s && s.plan;
-    let nextDue = s ? s.endDate : null;
-    if (nextDue && plan && plan !== 'onetime') {
-      const d = new Date(nextDue + 'T00:00:00');
-      if (plan === 'annual') d.setFullYear(d.getFullYear() + 1); else d.setMonth(d.getMonth() + 1);
-      nextDue = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    }
-    const row = { payment_status: 'paid', payment_method: method || (s && s.paymentMethod) || '—' };
-    if (nextDue) row.end_date = nextDue;
-    if (!real) {
-      const i = M.sales.findIndex(x => x.id === sid);
-      if (i > -1) Object.assign(M.sales[i], row);
-      snap();
-      await delay();
-      return { error: null };
-    }
-    return supabase.from('sales').update(row).eq('id', sid);
+    const months = s && s.plan === 'annual' ? 12 : 1;
+    return addPayment(sid, { months, method });
   }
 
   async function regenKey(sid, key) {
     if (!real) { const i = M.sales.findIndex(x => x.id === sid); if (i > -1) M.sales[i].apiKey = key; snap(); await delay(); return { error: null }; }
     return supabase.from('sales').update({ api_key: key }).eq('id', sid);
+  }
+
+  // ---------- stores (whatever registrada en el panel) ----------
+  async function listStores() {
+    return { data: DATA.stores, error: null };
+  }
+  async function saveStore(st) {
+    const row = {
+      name: st.name,
+      app_id: st.appId || null,
+      platform: st.platform || 'web',
+      gh_page: st.ghPage || null,
+      ws_ref: st.wsRef || null,
+      ws_url: st.wsUrl || null,
+      ws_store_id: st.wsStoreId != null ? st.wsStoreId : null,
+      sale_id: st.saleId || null,
+      status: st.status || 'active',
+      blocked_reason: st.blockedReason || null
+    };
+    if (!real) {
+      if (st.id) {
+        const i = M.stores.findIndex(x => x.id === st.id);
+        if (i > -1) { M.stores[i] = { ...M.stores[i], ...st, wsStoreId: row.ws_store_id, blockedReason: row.blocked_reason }; snap(); await delay(); return { data: M.stores[i], error: null }; }
+      }
+      const r = { id: genId(), ...st, wsStoreId: row.ws_store_id, blockedReason: row.blocked_reason };
+      M.stores.push({ ...r }); snap(); await delay(); return { data: r, error: null };
+    }
+    if (st.id) return supabase.from('stores').update(row).eq('id', st.id).select().single();
+    return supabase.from('stores').insert(row).select().single();
+  }
+  // Elimina el registro de la tienda y, si withSale=true, también su
+  // suscripción (sales + pagos en cascada). Con withSale=false solo
+  // se quita el registro, conservando la venta.
+  async function deleteStore(id, withSale = false) {
+    const st = DATA.stores.find(x => x.id === id);
+    if (!real) {
+      const i = M.stores.findIndex(x => x.id === id);
+      if (i > -1) M.stores.splice(i, 1);
+      if (withSale && st && st.saleId) {
+        M.payments = M.payments.filter(p => p.saleId !== st.saleId);
+        M.sales = M.sales.filter(x => x.id !== st.saleId);
+      }
+      snap(); await delay(); return { error: null };
+    }
+    if (withSale && st && st.saleId) {
+      const del = await supabase.from('sales').delete().eq('id', st.saleId);
+      if (del.error) return { error: del.error };
+    }
+    return supabase.from('stores').delete().eq('id', id);
+  }
+  // Bloquea/desbloquea una tienda al instante. NO toca el estado de la
+  // base de datos compartida (hay otras tiendas en la misma DB).
+  async function setStoreBlock(id, blocked, reason) {
+    const st = DATA.stores.find(x => x.id === id);
+    if (!real) {
+      const i = M.stores.findIndex(x => x.id === id);
+      if (i > -1) M.stores[i] = { ...M.stores[i], status: blocked ? 'blocked' : 'active', blockedReason: blocked ? (reason || '') : null };
+      if (st && st.saleId) {
+        const j = M.sales.findIndex(x => x.id === st.saleId);
+        if (j > -1) M.sales[j] = { ...M.sales[j], status: blocked ? 'suspended' : 'active', page: blocked ? 'offline' : 'online', blockedSince: blocked ? new Date().toISOString() : null };
+      }
+      snap(); await delay(); return { error: null };
+    }
+    const errs = [];
+    const r1 = await supabase.from('stores').update({ status: blocked ? 'blocked' : 'active', blocked_reason: blocked ? (reason || '') : null }).eq('id', id);
+    if (r1.error) errs.push(r1.error.message);
+    if (st && st.saleId) {
+      const r2 = await supabase.from('sales').update({ status: blocked ? 'suspended' : 'active', page: blocked ? 'offline' : 'online', blocked_since: blocked ? new Date().toISOString() : null }).eq('id', st.saleId);
+      if (r2.error) errs.push(r2.error.message);
+    }
+    return { error: errs.length ? errs.join('; ') : null };
   }
 
   async function saveSettings(s) {
@@ -311,7 +437,8 @@
     createApp, updateApp, deleteApp,
     createClient, updateClient, deleteClient,
     createSale, updateSale, deleteSale,
-    setBlock, markPaid, regenKey, saveSettings,
+    setBlock, markPaid, addPayment, regenKey, saveSettings,
+    listStores, saveStore, deleteStore, setStoreBlock,
     resetOwnData
   };
 })();

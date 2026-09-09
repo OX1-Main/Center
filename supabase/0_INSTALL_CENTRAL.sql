@@ -55,6 +55,7 @@ create policy "profiles_select_own"
   on public.profiles for select
   using (auth.uid() = id);
 
+drop policy if exists "profiles_update_admin" on public.profiles;
 create policy "profiles_update_admin"
   on public.profiles for update
   using (public.is_admin());
@@ -92,18 +93,22 @@ create table if not exists public.apps (
 
 alter table public.apps enable row level security;
 
+drop policy if exists "apps_select_authed" on public.apps;
 create policy "apps_select_authed"
   on public.apps for select
   using (auth.role() = 'authenticated');
 
+drop policy if exists "apps_insert_admin" on public.apps;
 create policy "apps_insert_admin"
   on public.apps for insert
   with check (public.is_admin());
 
+drop policy if exists "apps_update_admin" on public.apps;
 create policy "apps_update_admin"
   on public.apps for update
   using (public.is_admin());
 
+drop policy if exists "apps_delete_admin" on public.apps;
 create policy "apps_delete_admin"
   on public.apps for delete
   using (public.is_admin());
@@ -121,19 +126,23 @@ create table if not exists public.clients (
 
 alter table public.clients enable row level security;
 
+drop policy if exists "clients_select_own" on public.clients;
 create policy "clients_select_own"
   on public.clients for select
   using (auth.uid() = user_id);
 
+drop policy if exists "clients_insert_own" on public.clients;
 create policy "clients_insert_own"
   on public.clients for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "clients_update_own" on public.clients;
 create policy "clients_update_own"
   on public.clients for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "clients_delete_own" on public.clients;
 create policy "clients_delete_own"
   on public.clients for delete
   using (auth.uid() = user_id);
@@ -145,6 +154,7 @@ create table if not exists public.sales (
   client_id uuid references public.clients (id) on delete cascade,
   contract text not null,
   plan text not null default 'monthly' check (plan in ('monthly', 'annual', 'onetime')),
+  subscription_tier text not null default 'free' check (subscription_tier in ('free', 'basico', 'profesional', 'empresarial')),
   payment_method text,
   payment_status text not null default 'pending' check (payment_status in ('paid', 'pending')),
   start_date date,
@@ -156,12 +166,16 @@ create table if not exists public.sales (
   created_at timestamptz not null default now()
 );
 
+alter table public.sales add column if not exists subscription_tier text not null default 'free' check (subscription_tier in ('free', 'basico', 'profesional', 'empresarial'));
+
 alter table public.sales enable row level security;
 
+drop policy if exists "sales_select_own" on public.sales;
 create policy "sales_select_own"
   on public.sales for select
   using (auth.uid() = user_id);
 
+drop policy if exists "sales_insert_own" on public.sales;
 create policy "sales_insert_own"
   on public.sales for insert
   with check (
@@ -172,6 +186,7 @@ create policy "sales_insert_own"
     )
   );
 
+drop policy if exists "sales_update_own" on public.sales;
 create policy "sales_update_own"
   on public.sales for update
   using (auth.uid() = user_id)
@@ -183,6 +198,7 @@ create policy "sales_update_own"
     )
   );
 
+drop policy if exists "sales_delete_own" on public.sales;
 create policy "sales_delete_own"
   on public.sales for delete
   using (auth.uid() = user_id);
@@ -200,14 +216,17 @@ create table if not exists public.settings (
 
 alter table public.settings enable row level security;
 
+drop policy if exists "settings_select_own" on public.settings;
 create policy "settings_select_own"
   on public.settings for select
   using (auth.uid() = user_id);
 
+drop policy if exists "settings_insert_own" on public.settings;
 create policy "settings_insert_own"
   on public.settings for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "settings_update_own" on public.settings;
 create policy "settings_update_own"
   on public.settings for update
   using (auth.uid() = user_id)

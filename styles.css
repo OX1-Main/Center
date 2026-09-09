@@ -657,6 +657,10 @@
     .badge-green { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
     .badge-amber { background: rgba(245, 158, 11, 0.12); color: #d97706; }
     .badge-red { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+    .tier-free { background: rgba(161, 161, 170, 0.15); color: #a1a1aa; }
+    .tier-basico { background: rgba(56, 132, 255, 0.16); color: #60a5fa; }
+    .tier-profesional { background: rgba(139, 92, 246, 0.18); color: #a78bfa; }
+    .tier-empresarial { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 
     .chip {
       display: inline-flex;
@@ -1415,3 +1419,7 @@
     }
   
   
+/* OX1 - filtros y acciones de cliente */
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.filter-bar select{background:#10141a;border:1px solid #2a3341;border-radius:8px;color:#e4e7ee;padding:7px 10px;font-size:13px}
+.client-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}

@@ -149,6 +149,7 @@ create table if not exists public.sales (
   client_id uuid references public.clients (id) on delete cascade,
   contract text not null,
   plan text not null default 'monthly' check (plan in ('monthly', 'annual', 'onetime')),
+  subscription_tier text not null default 'free' check (subscription_tier in ('free', 'basico', 'profesional', 'empresarial')),
   payment_method text,
   payment_status text not null default 'pending' check (payment_status in ('paid', 'pending')),
   start_date date,
@@ -159,6 +160,8 @@ create table if not exists public.sales (
   api_key text,
   created_at timestamptz not null default now()
 );
+
+alter table public.sales add column if not exists subscription_tier text not null default 'free' check (subscription_tier in ('free', 'basico', 'profesional', 'empresarial'));
 
 alter table public.sales enable row level security;
 

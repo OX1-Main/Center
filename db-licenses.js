@@ -17,9 +17,13 @@
 
   const real = window.supabase && typeof SUPABASE_URL === 'string' && SUPABASE_URL.startsWith('https://') && !/YOURPROJECT|YOUR_SUPABASE/.test(SUPABASE_URL) && SUPABASE_ANON_KEY.length > 20;
 
-  const supabase = real ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-  }) : null;
+  // Reutiliza el client de db.js (comparte la sesión). Solo crea uno
+  // propio si db.js no lo expuso — nunca dos clients con el mismo storage.
+  const supabase = real
+    ? (window.__OX1_SUPABASE || window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      }))
+    : null;
 
   // ---------- demo store ----------
   const M = { licenses: [], devices: [], events: [], offlineTokens: [] };

@@ -89,11 +89,15 @@ const parseISO = s => { const [y, m, d] = String(s).split('-').map(Number); retu
 const DAY = 86400000;
 const now = new Date();
 const TODAY = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+const toDateOnly = iso => (iso ? String(iso).slice(0, 10) : null);
 const daysUntil = isoStr => isoStr ? Math.round((parseISO(isoStr) - TODAY) / DAY) : null;
 const fmtDate = isoStr => isoStr ? parseISO(isoStr).toLocaleDateString(state && state.lang === 'es' ? 'es' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const monthLong = (y, m) => new Date(y, m, 1).toLocaleDateString(state && state.lang === 'es' ? 'es' : 'en-US', { month: 'long', year: 'numeric' });
 
 const defaultSettings = { alertDays: 7, panelName: 'My Services', emailNotif: true, webhookNotif: true, paymentMethods: ['PayPal', 'Bank transfer', 'Cash', 'Credit card'], lang: 'en' };
+const SUBSCRIPTION_TIERS = ['free', 'basico', 'profesional', 'empresarial'];
+const tierLabel = k => ({ free: 'Free', basico: 'Básico', profesional: 'Profesional', empresarial: 'Empresarial' }[k] || 'Free');
+const tierBadge = k => `<span class="badge tier-${k || 'free'}">${tierLabel(k)}</span>`;
 let state = { settings: Object.assign({}, defaultSettings), lang: 'en' };
 let apps = [];
 let clients = [];
@@ -110,6 +114,7 @@ let loginMode = 'signin';
 let loginFactorId = null;
 let authGuard = null;
 let sessionHandling = null;
+let bootFinished = false;
 
 // ---------- i18n ----------
 const t = (s, vars) => {
@@ -244,6 +249,13 @@ const navGroups = [
 ];
 const bottomItems = [{ id: 'logout', title: 'Sign out', icon: 'LogOut' }];
 const viewTitles = { home: 'Dashboard', analytics: 'Analytics', projects: 'Projects', clients: 'Clients', payments: 'Payments', calendar: 'Calendar', alerts: 'Alerts', apikeys: 'API Keys', settings: 'Settings' };
+let projFilter = { client: 'all', app: 'all', status: 'all' };
+
+// Expuestos exprofeso: los módulos drop-in (p.ej. view-licenses.js)
+// extienden la navegación y leen currentView desde aquí (getter vivo).
+window.navGroups = navGroups;
+window.viewTitles = viewTitles;
+Object.defineProperty(window, 'currentView', { configurable: true, get: () => currentView });
 
 function navItemHtml(item) {
   const badge = badgeFor(item.id);
@@ -290,6 +302,24 @@ async function logout() {
   user = null;
   toast(t('Signed out'), 'success');
   showLogin();
+}
+
+async function signOutEverywhere() {
+  if (!DB.isConfigured) { toast(t('Demo mode — session kept'), 'warn'); return; }
+  openConfirm({
+    title: t('Sign out everywhere'),
+    message: t('This revokes your session on every device. You will need to sign in again everywhere.'),
+    confirmText: t('Sign out everywhere'),
+    danger: true,
+    onConfirm: async () => {
+      const { error } = await DB.signOut('global');
+      if (error) { toast(error.message || error, 'error'); return; }
+      authed = false;
+      user = null;
+      toast(t('Signed out everywhere'), 'success');
+      showLogin();
+    }
+  });
 }
 
 function navigate(view, saleId) {
@@ -342,7 +372,7 @@ function saleRow(s) {
       <div class="mini-avatar">${esc(cl.name.charAt(0))}</div>
       <div><div class="sale-name">${esc(cl.name)}</div><div class="sale-sub">${esc(cl.company || '')}</div></div>
     </div>
-    <div class="sale-contract">${esc(s.contract)}<div class="sale-sub">${planLabel(s.plan)} · ${esc(s.paymentMethod || '—')} · ${paymentStatusLabel(s)}</div></div>
+    <div class="sale-contract">${tierBadge(s.subscriptionTier)} ${esc(s.contract)}<div class="sale-sub">${planLabel(s.plan)} · ${esc(s.paymentMethod || '—')} · ${paymentStatusLabel(s)}</div></div>
     <div class="sale-due">${dueCell}</div>
     <div class="sale-chips">${chip(s, 'page')} ${chip(s, 'db')}</div>
     <div class="sale-status">${statusBadge(s)}</div>
@@ -459,13 +489,40 @@ function renderAnalytics() {
     </div>`;
 }
 
+function projFilterBar() {
+  const f = projFilter;
+  const sel = (pf, allLabel, opts) => `<select data-pf="${pf}"><option value="all">${allLabel}</option>${opts}</select>`;
+  return `<div class="filter-bar">
+    ${sel('client', t('All clients'), clients.map(c => `<option value="${c.id}" ${f.client === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join(''))}
+    ${sel('app', t('All apps'), apps.map(a => `<option value="${a.id}" ${f.app === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join(''))}
+    ${sel('status', t('All states'), `
+      <option value="active" ${f.status === 'active' ? 'selected' : ''}>${t('Active')}</option>
+      <option value="blocked" ${f.status === 'blocked' ? 'selected' : ''}>${t('Blocked')}</option>
+      <option value="expired" ${f.status === 'expired' ? 'selected' : ''}>${t('Expired/overdue')}</option>
+    `)}
+  </div>`;
+}
+
+function projMatches(s) {
+  const f = projFilter;
+  if (f.client !== 'all' && s.clientId !== f.client) return false;
+  if (f.app !== 'all' && s.appId !== f.app) return false;
+  if (f.status === 'all') return true;
+  if (f.status === 'active') return s.status === 'active';
+  if (f.status === 'blocked') return s.status === 'suspended';
+  if (f.status === 'expired') return s.paymentStatus === 'pending' && !!s.endDate && daysUntil(s.endDate) < 0;
+  return true;
+}
+
 function renderProjects() {
   const isAdmin = profile && profile.role === 'admin';
   const appActions = isAdmin ? `<button class="btn btn-ghost btn-sm" data-action="app-new">${icon('Plus', 'bic')} ${t('New app')}</button>` : '';
+  const filtering = projFilter.client !== 'all' || projFilter.app !== 'all' || projFilter.status !== 'all';
   const cards = apps.map(a => {
-    const inst = salesEff().filter(s => s.appId === a.id);
+    const inst = salesEff().filter(s => s.appId === a.id && projMatches(s));
     const pending = inst.filter(s => s.paymentStatus === 'pending').length;
     const blocked = inst.filter(s => s.status === 'suspended').length;
+    if (filtering && !inst.length) return '';
     return `
     <div class="card app-card">
       <div class="app-card-head">
@@ -481,6 +538,7 @@ function renderProjects() {
     </div>`;
   }).join('');
   return `${pageHead(t('Projects'), t('Manage the app catalog and every service you sell.'), `<button class="btn btn-primary btn-sm" data-action="sale-new">${icon('Plus', 'bic')} ${t('New project')}</button> ${appActions}`)}
+    ${projFilterBar()}
     <div class="app-stack">${cards.length ? cards : `<div class="card"><div class="empty">${t('No apps in the catalog yet.')}${isAdmin ? ' ' + t('Create the first one.') : ' ' + t('Ask an admin to add them.')}</div></div>`}</div>`;
 }
 
@@ -492,6 +550,9 @@ function renderSaleDetail(sid) {
   const days = s.endDate ? daysUntil(s.endDate) : null;
   const dueStr = s.plan === 'onetime' ? t('One-time') : `${fmtDate(s.endDate)}<div class="due-sub">${days < 0 ? t('overdue') : days === 0 ? t('today') : t('{n}d left', { n: days })}</div>`;
   const pending = s.paymentStatus === 'pending';
+  const pays = (DB.data.payments || []).filter(p => p.saleId === s.id).sort((a, b) => String(b.paidAt).localeCompare(String(a.paidAt)));
+  const totalMonths = pays.reduce((n, p) => n + (p.months || 0), 0);
+  const linked = (DB.data.stores || []).find(st => st.saleId === s.id);
   return `
     <button class="btn btn-ghost btn-sm detail-back" data-action="back">${icon('ArrowLeft', 'bic')} ${t('Back to projects')}</button>
     <div class="detail-hero">
@@ -523,10 +584,14 @@ function renderSaleDetail(sid) {
       </div>
       <div class="card detail-card">
         <div class="card-head"><h3>${t('Contract')}</h3>
+          ${linked
+            ? `<span class="pill-muted">${icon('Box', 'bic')} ${esc(linked.name)}</span><button class="btn btn-ghost btn-sm" data-action="store-edit-modal" data-id="${linked.id}">${icon('Pencil', 'bic')} ${t('Edit linked store')}</button>`
+            : (window.openStoreModal ? `<button class="btn btn-ghost btn-sm" data-action="link-store" data-sid="${s.id}">${icon('Box', 'bic')} ${t('Link store')}</button>` : '')}
           ${pending && s.plan !== 'onetime' ? `<button class="btn btn-primary btn-sm" data-action="pay" data-sid="${s.id}">${icon('CheckCircle2', 'bic')} ${t('Mark paid')}</button>` : ''}
         </div>
         <div class="detail-grid">
           <div><span class="detail-label">${t('Plan')}</span><span>${planLabel(s.plan)}</span></div>
+          <div><span class="detail-label">${t('Subscription')}</span><span>${tierBadge(s.subscriptionTier)}</span></div>
           <div><span class="detail-label">${t('Payment')}</span><span>${paymentStatusBadge(s)}</span></div>
           <div><span class="detail-label">${t('Method')}</span><span>${esc(s.paymentMethod || '—')}</span></div>
           <div><span class="detail-label">${t('Start date')}</span><span>${fmtDate(s.startDate)}</span></div>
@@ -538,6 +603,7 @@ function renderSaleDetail(sid) {
       <div class="card detail-card">
         <div class="card-head"><h3>${t('Status')}</h3></div>
         <div class="detail-rows">
+          <div><span class="detail-label">${t('Store')}</span>${linked ? `<button class="btn btn-ghost btn-sm" data-action="store-edit-modal" data-id="${linked.id}">${esc(linked.name)}</button>` : `<span class="muted">—</span>`}</div>
           <div><span class="detail-label">${t('Web page')}</span>${chip(s, 'page')}</div>
           <div><span class="detail-label">${t('Database')}</span>${chip(s, 'db')}</div>
         </div>
@@ -561,15 +627,27 @@ function renderSaleDetail(sid) {
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${t('Payment')}</h3>
-        ${pending ? `<button class="btn btn-primary btn-sm" data-action="pay" data-sid="${s.id}">${icon('CheckCircle2', 'bic')} ${t('Mark paid')}</button>` : ''}
+      <div class="card-head"><h3>${t('Payments')}</h3>
+        <div class="row-actions">
+          <span class="pill-muted">${totalMonths} ${totalMonths === 1 ? t('month') : t('months')}</span>
+          <button class="btn btn-primary btn-sm" data-action="add-payment" data-sid="${s.id}">${icon('Plus', 'bic')} ${t('Add payment')}</button>
+        </div>
       </div>
       <div class="detail-rows">
         <div><span class="detail-label">${t('Payment status')}</span>${paymentStatusBadge(s)}</div>
         <div><span class="detail-label">${t('Payment method')}</span><span>${esc(s.paymentMethod || '—')}</span></div>
-        <div><span class="detail-label">${t('Plan')}</span><span>${planLabel(s.plan)}</span></div>
+        <div><span class="detail-label">${t('Paid until')}</span><span>${fmtDate(toDateOnly(s.paidUntil))}</span></div>
       </div>
-      <p class="sale-sub">${t('When you mark a project as paid, its next due date moves forward one period and the pending alert clears.')}</p>
+      ${pays.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>${t('Date')}</th><th>${t('Months paid')}</th><th>${t('Method')}</th><th>${t('Note')}</th></tr></thead>
+        <tbody>${pays.map(p => `<tr>
+          <td>${fmtDate(toDateOnly(p.paidAt))}</td>
+          <td>${p.months} ${p.months === 1 ? t('month') : t('months')}</td>
+          <td>${esc(p.method)}</td>
+          <td class="muted">${esc(p.note || '—')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : `<p class="sale-sub">${t('No payments recorded yet.')}</p>`}
+      <p class="sale-sub">${t('Add a payment to move the next due date forward by the paid months.')}</p>
     </div>`;
 }
 
@@ -596,9 +674,13 @@ function renderClients() {
           ${statusBadge(s)}
           <label class="switch ${s.status === 'active' ? '' : 'off'}" title="${t('Kill switch')}"><input type="checkbox" data-action="block" data-sid="${s.id}" ${s.status === 'active' ? 'checked' : ''} /><span class="track"></span></label>
         </div>`).join('') || `<div class="empty">${t('No services.')}</div>`}</div>
+      <div class="client-actions">
+        <button class="btn btn-ghost btn-sm" data-action="client-subs" data-id="${c.id}">${icon('Box', 'bic')} ${t('Subscriptions')}</button>
+        <button class="btn btn-ghost btn-sm" data-action="client-edit" data-id="${c.id}">${icon('Pencil', 'bic')} ${t('Edit client')}</button>
+      </div>
     </div>`;
   }).join('');
-  return `${pageHead(t('Clients'), t('Each client with their contracted services and payment status.'))}
+  return `${pageHead(t('Clients'), t('Each client with their contracted services and payment status.'), `<button class="btn btn-primary btn-sm" data-action="client-new">${icon('User', 'bic')} ${t('New client')}</button>`)}
     <div class="client-grid">${cards.length ? cards : `<div class="card"><div class="empty">${t('No clients yet.')}</div></div>`}</div>`;
 }
 
@@ -754,8 +836,19 @@ function renderSettings() {
         <p class="sale-sub">${t('Signed in as')} <strong>${esc(profile ? profile.email || '' : '')}</strong> · <span class="badge ${isAdmin ? 'badge-green' : 'badge-amber'}">${isAdmin ? t('Admin') : t('Staff')}</span></p>
         <div class="mfa-row">
           <button class="btn btn-ghost" data-action="change-password">${icon('Lock', 'bic')} ${t('Change password')}</button>
+          <button class="btn btn-ghost" data-action="signout-global">${icon('ShieldOff', 'bic')} ${t('Sign out everywhere')}</button>
         </div>
+        <p class="sale-sub">${t('Signing out everywhere revokes your session on every device. Changing your password also revokes the other sessions.')}</p>
         ${isAdmin ? `<p class="sale-sub">${t('To change roles, use Supabase (Auth > Users):')} <code class="keycode">update profiles set role='admin' where id='&lt;user-id&gt;';</code></p>` : `<p class="sale-sub">${t('Admins manage the app catalog and user roles. Ask an admin if you need access.')}</p>`}
+      </div>
+      <div class="card settings-card">
+        <h3>${t('Security')}</h3>
+        <div class="detail-rows">
+          <div><span class="detail-label">${t('HTTPS / HSTS')}</span><span class="muted">${t('GitHub Pages cannot send header. Enable HSTS via your CDN/domain (Cloudflare) — see supabase/SECURITY.md.')}</span></div>
+          <div><span class="detail-label">${t('CSRF')}</span><span class="badge badge-green">${t('PKCE + bearer tokens, no cookies: classic CSRF does not apply.')}</span></div>
+          <div><span class="detail-label">${t('Session rotation')}</span><span class="muted">${t('Auto refresh with token rotation. Global sign-out revokes all sessions.')}</span></div>
+          <div><span class="detail-label">${t('Link expiry')}</span><span class="muted">${t('Password/link tokens expire (set TTL in Supabase Auth, default 1h).')}</span></div>
+        </div>
       </div>
       <div class="card settings-card">
         <h3>${t('Recovery key')}</h3>
@@ -788,8 +881,21 @@ function renderView() {
   else if (currentView === 'settings') view.innerHTML = renderSettings();
   view.scrollTop = 0;
   if (currentView === 'calendar') drawCalendar();
-  else if (currentView === 'home' || currentView === 'analytics') drawCharts();
+  else if (currentView === 'home' || currentView === 'analytics') ensureCharts().then(drawCharts).catch(() => {});
   else if (currentView === 'settings') { refreshMfaCard(); refreshRecoveryCard(); }
+}
+
+// chart.js se carga bajo demanda (solo Dashboard/Analytics) para que el
+// arranque no baje el CDN de ~190KB en cada apertura del panel.
+function ensureCharts() {
+  if (window.Chart) return Promise.resolve(window.Chart);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js';
+    s.onload = () => resolve(window.Chart);
+    s.onerror = () => reject(new Error('chart.js'));
+    document.head.appendChild(s);
+  });
 }
 
 function renderAll() {
@@ -822,6 +928,7 @@ function onViewClick(e) {
   else if (action === 'pm-add') addPaymentOption();
   else if (action === 'pm-del') removePaymentOption(Number(t.dataset.index));
   else if (action === 'change-password') openChangePassword();
+  else if (action === 'signout-global') signOutEverywhere();
   else if (action === 'recovery-set') openRecoverySetup();
   else if (action === 'mfa-setup') openMfaSetup();
   else if (action === 'mfa-disable') confirmMfaDisable();
@@ -833,11 +940,17 @@ function onViewClick(e) {
   else if (action === 'app-edit') openForm('app', appById(t.dataset.id));
   else if (action === 'app-del') confirmDeleteApp(t.dataset.id);
   else if (action === 'client-edit') openForm('client', clientById(t.dataset.id));
+  else if (action === 'client-new') openForm('client');
+  else if (action === 'client-subs') { if (window.openClientSubs) window.openClientSubs(t.dataset.id); }
+  else if (action === 'link-store') { if (window.linkStoreToSale) window.linkStoreToSale(t.dataset.sid); }
+  else if (action === 'store-edit-modal') { if (window.openStoreModal) window.openStoreModal(t.dataset.id); }
+  else if (action === 'add-payment') { const sid = t.dataset.sid; if (window.openPayment) window.openPayment(sid); else markPaid(sid); }
 }
 
 function onViewChange(e) {
   const tEl = e.target;
   if (tEl.id === 'setLang') { setLang(tEl.value); return; }
+  if (tEl.dataset && tEl.dataset.pf) { projFilter[tEl.dataset.pf] = tEl.value; renderView(); return; }
   if (tEl.dataset && tEl.dataset.action === 'block') {
     const sid = tEl.dataset.sid;
     if (!tEl.checked) confirmBlock(sid, tEl); else setBlock(sid, false);
@@ -1072,14 +1185,15 @@ function saleFormHtml(data, isEdit) {
         <label class="field"><span>${t('Payment method')}</span><select id="f-pmethod">${methodOpts || '<option value="">—</option>'}</select></label>
       </div>
       <div class="form-row">
+        <label class="field"><span>${t('Subscription')}</span><select id="f-sus">${SUBSCRIPTION_TIERS.map(x => `<option value="${x}" ${x === (s.subscriptionTier || 'free') ? 'selected' : ''}>${tierLabel(x)}</option>`).join('')}</select></label>
         <label class="field"><span>${t('Payment status')}</span><select id="f-pstatus">${['pending', 'paid'].map(v => `<option value="${v}" ${v === s.paymentStatus ? 'selected' : ''}>${t(cap(v))}</option>`).join('')}</select></label>
+      </div>
+      <div class="form-row">
         <label class="field"><span>${t('Start date')}</span><input id="f-start" type="date" value="${s.startDate || ''}" /></label>
-      </div>
-      <div class="form-row">
         <label class="field"><span>${t('Next due')}</span><input id="f-end" type="date" value="${s.endDate || ''}" /><span class="field-error" id="f-end-err"></span></label>
-        <label class="field"><span>${t('Page')}</span><select id="f-page">${['online', 'offline', 'review'].map(v => `<option value="${v}" ${v === s.page ? 'selected' : ''}>${t(cap(v))}</option>`).join('')}</select></label>
       </div>
       <div class="form-row">
+        <label class="field"><span>${t('Page')}</span><select id="f-page">${['online', 'offline', 'review'].map(v => `<option value="${v}" ${v === s.page ? 'selected' : ''}>${t(cap(v))}</option>`).join('')}</select></label>
         <label class="field"><span>${t('Database')}</span><select id="f-db">${['active', 'inactive', 'error'].map(v => `<option value="${v}" ${v === s.db ? 'selected' : ''}>${t(cap(v))}</option>`).join('')}</select></label>
       </div>
       <div class="form-error" id="f-error" role="alert" hidden></div>
@@ -1140,7 +1254,7 @@ async function submitForm() {
     if (newClient) { if (!cname) setErr('f-cname-err', t('Client name is required.')); if (cemail && !emailOk(cemail)) setErr('f-cemail-err', t('Enter a valid email.')); }
     else if (!clientId) setErr('f-client-err', t('Select a client or check "New client?".'));
     if (Object.keys(errors).length) return showFormErrors(errBox);
-    payload = { appId, contract, plan, paymentMethod, paymentStatus, startDate, endDate, page: $('#f-page').value, db: $('#f-db').value };
+    payload = { appId, contract, plan, subscriptionTier: ($('#f-sus').value || 'free'), paymentMethod, paymentStatus, startDate, endDate, page: $('#f-page').value, db: $('#f-db').value };
     if (newClient) payload._newClient = { name: cname, company: ($('#f-ccompany').value || '').trim(), email: cemail, phone: '' };
     else payload.clientId = clientId;
   }
@@ -1289,6 +1403,7 @@ const showErr = (el, msg) => { if (!el) return; el.textContent = msg; el.hidden 
 const hideErr = el => { if (!el) return; el.textContent = ''; el.hidden = true; };
 
 // ---------- auth / boot ----------
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]).catch(() => null);
 function showLogin() {
   hideMfaStep();
   setLoginMode('signin');
@@ -1535,8 +1650,8 @@ async function handleNewSession() {
   if (sessionHandling) return sessionHandling;
   const run = (async () => {
     if (!DB.isConfigured) { await afterAuth(); return; }
-    const st = await DB.mfaStatus();
-    if (!st.error && st.data && st.data.enabled && st.data.factorId && st.data.level !== 'aal2') {
+    const st = await withTimeout(DB.mfaStatus(), 6000);
+    if (st && !st.error && st.data && st.data.enabled && st.data.factorId && st.data.level !== 'aal2') {
       loginFactorId = st.data.factorId;
       showMfaStep();
       return;
@@ -1737,45 +1852,49 @@ async function confirmMfaDisable() {
 async function afterAuth() {
   authed = true;
   bootStartedAt = Date.now();
+  bootFinished = false;
   showBoot(t('Loading your data…'));
   let done = false;
   const watchdog = setTimeout(() => { if (!done) bootFatal(t('Loading timed out. Check your connection and retry.')); }, 8000);
-  let step = 'loading data';
   try {
-    step = 'loadAll';
     const loadPromise = DB.loadAll();
     const tmo = new Promise((_, rej) => setTimeout(() => rej(new Error(t('Timed out while loading data.'))), 6000));
     const err = await Promise.race([loadPromise, tmo]);
+    done = true;
+    clearTimeout(watchdog);
     if (err) throw new Error(err.error);
-    step = 'sync data';
-    syncData();
-    step = 'apply chrome';
-    applySettingsToChrome();
-    applyLangUI();
-    step = 'show app';
-    showApp();
-    step = 'init chrome';
-    initChrome();
-    step = 'render nav';
-    renderNav();
-    step = 'render view';
-    setActiveNav(currentView);
-    renderView();
+    bootStartedAt = 0;
+    try {
+      syncData();
+      applySettingsToChrome();
+      applyLangUI();
+      showApp();
+      initChrome();
+      renderNav();
+      setActiveNav(currentView);
+      renderView();
+      hideBoot();
+      bootFinished = true;
+    } catch (uiErr) {
+      showApp();
+      hideBoot();
+      toast(`${t('Failed to render the panel')}: ${uiErr.message}`, 'error');
+    }
+    return;
   } catch (e) {
     authed = false;
-    showBootError(t('Failed while "{step}": {msg}', { step, msg: e.message }));
-    return;
+    showBootError(t('Failed while "loadAll": {msg}', { msg: e.message }));
   } finally {
     done = true;
     clearTimeout(watchdog);
-    hideBoot();
   }
 }
 
 async function boot() {
   showBoot(t('Connecting…'));
   if (!DB.isConfigured) console.info('Demo mode — using in-memory demo data (fill config.js for Supabase).');
-  const { data: { session } } = await DB.getSession();
+  const gs = await withTimeout(DB.getSession(), 6000);
+  const session = (gs && gs.data && gs.data.session) || null;
   if (session && session.user) { user = session.user; await afterAuth(); }
   else showLogin();
   DB.onAuth((ev, sess) => {
@@ -1864,7 +1983,7 @@ function init() {
     const app = $('#app');
     app.classList.toggle('sidebar-collapsed');
     updateCollapseIcon();
-    if (currentView === 'home' || currentView === 'analytics') setTimeout(drawCharts, 350);
+    if (currentView === 'home' || currentView === 'analytics') setTimeout(() => ensureCharts().then(drawCharts).catch(() => {}), 350);
   });
   $('#sidebarBackdrop').addEventListener('click', () => $('#app').classList.remove('sidebar-collapsed'));
 
@@ -1894,7 +2013,7 @@ function init() {
   mq.addEventListener('change', e => { $('#app').classList.remove('sidebar-collapsed'); updateCollapseIcon(); });
 
   const themeMq = mm('(prefers-color-scheme: dark)');
-  themeMq.addEventListener('change', () => { if (currentView === 'home' || currentView === 'analytics') drawCharts(); });
+  themeMq.addEventListener('change', () => { if (currentView === 'home' || currentView === 'analytics') ensureCharts().then(drawCharts).catch(() => {}); });
 
   initWorkspace();
   boot();
@@ -1904,6 +2023,7 @@ window.addEventListener('error', e => { if (e && e.error) bootFatal(e.error.mess
 window.addEventListener('unhandledrejection', e => bootFatal((e.reason && (e.reason.message || e.reason)) || t('Unhandled error')));
 
 setInterval(() => {
+  if (bootFinished) return;
   const o = document.getElementById('bootOverlay');
   if (o && !o.hidden && bootStartedAt && Date.now() - bootStartedAt > 10000) {
     bootFatal(t('Boot did not finish. Press Diagnose to see exactly what is failing.'));
@@ -1911,6 +2031,7 @@ setInterval(() => {
 }, 3000);
 
 setInterval(() => {
+  if (bootFinished) return;
   const o = document.getElementById('bootOverlay');
   if (o && !o.hidden && bootStartedAt && Date.now() - bootStartedAt > 20000) {
     hideBoot();
