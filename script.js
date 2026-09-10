@@ -2022,6 +2022,34 @@ function init() {
 window.addEventListener('error', e => { if (e && e.error) bootFatal(e.error.message || t('Unexpected error')); });
 window.addEventListener('unhandledrejection', e => bootFatal((e.reason && (e.reason.message || e.reason)) || t('Unhandled error')));
 
+// Keep-alive: Supabase (free) pausa el proyecto tras 7 dias sin
+// peticiones. Mientras el dashboard este abierto, un ping ligero a la
+// BD central (RPC store_status, barata y publica) mantiene el proyecto
+// activo. Complemento del cron keepalive de GitHub Actions.
+(function () {
+  const KEEPALIVE_MS = 20 * 60 * 1000;
+  function keepalivePing() {
+    try {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+      if (String(SUPABASE_URL).indexOf('YOURPROJECT') >= 0) return;
+      fetch(SUPABASE_URL + '/rest/v1/rpc/store_status', {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ p_ws_ref: '', p_ws_store_id: 0 })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  try {
+    if (navigator && navigator.connection && navigator.connection.saveData) return;
+  } catch (e) {}
+  setTimeout(keepalivePing, 15000);
+  setInterval(keepalivePing, KEEPALIVE_MS);
+})();
+
 setInterval(() => {
   if (bootFinished) return;
   const o = document.getElementById('bootOverlay');
