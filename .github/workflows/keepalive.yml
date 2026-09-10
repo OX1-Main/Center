@@ -1,0 +1,33 @@
+name: keepalive
+
+# Mantiene activos los proyectos Supabase (plan free): se pausan
+# solos si no reciben ninguna peticion durante 7 dias. Este cron
+# hace pings ligeros cada 12 horas aunque nadie abra las paginas.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping BD central (store_status)
+        run: |
+          curl -s -o /dev/null -w "central: %{http_code}\n" \
+            -X POST "https://wufzqynbhvfbzlmqnvgw.supabase.co/rest/v1/rpc/store_status" \
+            -H "apikey: sb_publishable_MLdr8wFcc2vG9npNtUg38g_Dg_uxodE" \
+            -H "Authorization: Bearer sb_publishable_MLdr8wFcc2vG9npNtUg38g_Dg_uxodE" \
+            -H "Content-Type: application/json" \
+            -d '{"p_ws_ref":"qfxcnvnjbabikdikftsr","p_ws_store_id":1}' || true
+
+      - name: Ping BD de tienda (select settings)
+        run: |
+          curl -s -o /dev/null -w "tienda: %{http_code}\n" \
+            "https://qfxcnvnjbabikdikftsr.supabase.co/rest/v1/settings?select=store_id&limit=1" \
+            -H "apikey: sb_publishable_BRvDhGZ0uVwqxP3QL0vcYQ_NMuEAnYs" \
+            -H "Authorization: Bearer sb_publishable_BRvDhGZ0uVwqxP3QL0vcYQ_NMuEAnYs" || true
